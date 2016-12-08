@@ -31,6 +31,7 @@ LICENSE file.
   <properties>
      <checkstyle.failOnViolation>false</checkstyle.failOnViolation>
      <jackson.api.version>1.9.4</jackson.api.version>
+     <influxdb.version>2.5</influxdb.version>
   </properties>
 
   <dependencies>	
@@ -59,6 +60,16 @@ LICENSE file.
       <groupId>org.hdrhistogram</groupId>
       <artifactId>HdrHistogram</artifactId>
       <version>2.1.4</version>
+    </dependency>
+    <dependency>
+      <groupId>org.influxdb</groupId>
+      <artifactId>influxdb-java</artifactId>
+      <version>${influxdb.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-lang3</artifactId>
+      <version>3.5</version>
     </dependency>
   </dependencies>
   <build>

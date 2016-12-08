@@ -36,6 +36,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 
+import com.yahoo.ycsb.measurements.exporter.InfluxDbMeasurementsExporter;
 import org.apache.htrace.core.Tracer;
 import org.apache.htrace.core.TraceScope;
 import org.apache.htrace.core.HTraceConfiguration;
@@ -66,6 +67,10 @@ class StatusThread extends Thread
   private final String _label;
   private final boolean _standardstatus;
 
+  /** InfluxDb related stuff */
+  private final boolean useInfluxDbExporter;
+  private final InfluxDbMeasurementsExporter influxDbExporter;
+
   /** The interval for reporting status. */
   private long _sleeptimeNs;
 
@@ -93,6 +98,34 @@ class StatusThread extends Thread
   {
     this(completeLatch, clients, label, standardstatus, statusIntervalSeconds, false);
   }
+
+  /**
+   * Creates a new StatusThread.
+   *
+   * @param completeLatch The latch that each client thread will {@link CountDownLatch#countDown()} as they complete.
+   * @param clients The clients to collect metrics from.
+   * @param label The label for the status.
+   * @param standardstatus If true the status is printed to stdout in addition to stderr.
+   * @param statusIntervalSeconds The number of seconds between status updates.
+   * @param trackJVMStats Whether or not to track JVM stats.
+   * @param useInfluxDbExporter Whether or not to  use InfluxDbExporter
+   * @param influxDbExporter Exporter instance
+   *
+   */
+  public StatusThread(CountDownLatch completeLatch, List<ClientThread> clients,
+                      String label, boolean standardstatus, int statusIntervalSeconds,
+                      boolean trackJVMStats, boolean useInfluxDbExporter, InfluxDbMeasurementsExporter influxDbExporter)
+  {
+    _completeLatch=completeLatch;
+    _clients=clients;
+    _label=label;
+    _standardstatus=standardstatus;
+    _sleeptimeNs=TimeUnit.SECONDS.toNanos(statusIntervalSeconds);
+    _measurements = Measurements.getMeasurements();
+    _trackJVMStats = trackJVMStats;
+    this.useInfluxDbExporter = useInfluxDbExporter;
+    this.influxDbExporter = influxDbExporter;
+  }
   
   /**
    * Creates a new StatusThread.
@@ -108,13 +141,7 @@ class StatusThread extends Thread
                       String label, boolean standardstatus, int statusIntervalSeconds,
                       boolean trackJVMStats)
   {
-    _completeLatch=completeLatch;
-    _clients=clients;
-    _label=label;
-    _standardstatus=standardstatus;
-    _sleeptimeNs=TimeUnit.SECONDS.toNanos(statusIntervalSeconds);
-    _measurements = Measurements.getMeasurements();
-    _trackJVMStats = trackJVMStats;
+    this(completeLatch, clients, label, standardstatus, statusIntervalSeconds, false, false, null);
   }
   
   /**
@@ -153,6 +180,19 @@ class StatusThread extends Thread
     }
     // Print the final stats.
     computeStats(startTimeMs, startIntervalMs, System.currentTimeMillis(), lastTotalOps);
+
+    // Close InfluxDb exporter connection, if any
+    if (useInfluxDbExporter) {
+      try {
+        influxDbExporter.close();
+      } catch (IOException e) {
+        // No specific actions can be taken
+        // InfluxDb instance might be misconfigured or down
+        // So just notify user
+        e.printStackTrace();
+        e.printStackTrace(System.out);
+      }
+    }
   }
 
   /**
@@ -199,13 +239,27 @@ class StatusThread extends Thread
       msg.append("est completion in ").append(RemainingFormatter.format(estremaining));
     }
 
-    msg.append(Measurements.getMeasurements().getSummary());
+    Measurements measurements = Measurements.getMeasurements();
+    msg.append(measurements.getSummary());
 
     System.err.println(msg);
 
     if (_standardstatus) {
       System.out.println(msg);
     }
+
+    if (useInfluxDbExporter) {
+      try {
+        measurements.exportMeasurements(influxDbExporter);
+      } catch (IOException e) {
+        // No specific actions can be taken
+        // InfluxDb instance might be misconfigured or down
+        // So just notify user
+        e.printStackTrace();
+        e.printStackTrace(System.out);
+      }
+    }
+
     return totalops;
   }
 
@@ -1095,7 +1149,27 @@ public class Client
       int statusIntervalSeconds = Integer.parseInt(props.getProperty("status.interval","10"));
       boolean trackJVMStats = props.getProperty(Measurements.MEASUREMENT_TRACK_JVM_PROPERTY, 
           Measurements.MEASUREMENT_TRACK_JVM_PROPERTY_DEFAULT).equals("true");
-      statusthread=new StatusThread(completeLatch,clients,label,standardstatus,statusIntervalSeconds,trackJVMStats);
+
+      boolean useInfluxDbExporter = props.getProperty(InfluxDbMeasurementsExporter.USE_INFLUXDB_EXPORTER, "false").equals("true");
+      if (useInfluxDbExporter) {
+        String hostPort = props.getProperty(InfluxDbMeasurementsExporter.INFLUXDB_HOSTPORT, "");
+        String username = props.getProperty(InfluxDbMeasurementsExporter.INFLUXDB_USERNAME, "");
+        String password = props.getProperty(InfluxDbMeasurementsExporter.INFLUXDB_PASSWORD, "");
+        String dbName = props.getProperty(InfluxDbMeasurementsExporter.INFLUXDB_DBNAME, "");
+        String tagName = props.getProperty(InfluxDbMeasurementsExporter.INFLUXDB_TAGNAME, "");
+        String tagValue  = props.getProperty(InfluxDbMeasurementsExporter.INFLUXDB_TAGVALUE, "");
+        InfluxDbMeasurementsExporter influxDbExporter = new InfluxDbMeasurementsExporter(
+          hostPort, username, password,dbName, tagName, tagValue
+        );
+        statusthread = new StatusThread(
+          completeLatch,clients,label,standardstatus,statusIntervalSeconds,trackJVMStats,
+          useInfluxDbExporter, influxDbExporter
+        );
+      } else {
+        statusthread = new StatusThread(
+          completeLatch,clients,label,standardstatus,statusIntervalSeconds,trackJVMStats
+        );
+      }
       statusthread.start();
     }
 
